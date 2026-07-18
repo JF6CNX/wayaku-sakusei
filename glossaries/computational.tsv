@@ -1,0 +1,40 @@
+en	ja	note
+applicability domain	適用範囲	
+asymmetric hydrogenation	不斉水素化	
+atomic coordinates	原子座標	
+barrier	障壁	
+benchmark	ベンチマーク	
+catalyst design	触媒設計	
+cheminformatics	ケモインフォマティクス	
+computational chemistry	計算化学	
+computational cost	計算コスト	
+conformer	立体配座	
+conformer ensemble	立体配座アンサンブル	
+conformer generation	立体配座生成	
+conformer space	立体配座空間	
+constrained distance geometry	拘束付き距離幾何学	
+data set	データセット	
+distance geometry	距離幾何学	
+enantiomeric excess	エナンチオマー過剰率	
+energy landscape	エネルギー地形	
+force field	力場	
+geometry optimization	構造最適化	
+ground state	基底状態	
+heavy atom	重原子	
+interatomic distance	原子間距離	
+low-energy conformer	低エネルギー立体配座	
+machine learning	機械学習	MLは保護対象
+metadynamics	メタダイナミクス	
+minima-hopping	ミニマホッピング	
+molecular topology	分子トポロジー	
+prediction error	予測誤差	
+quantum chemistry	量子化学	
+reaction center	反応中心	
+reaction selectivity	反応選択性	
+root-mean-square deviation	二乗平均平方根偏差	RMSDは保護対象
+semiempirical	半経験的	
+tight binding	タイトバインディング	
+trade-off	トレードオフ	
+training data	学習データ	
+transition state	遷移状態	略語TSは保護対象
+wall-time	実行時間	

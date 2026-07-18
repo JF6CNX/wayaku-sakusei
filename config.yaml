@@ -1,0 +1,20 @@
+# 実行時のデフォルト設定。CLI引数で上書き可能。
+
+engine: claude          # claude / deepl / google
+
+font:
+  path: C:/Windows/Fonts/msgothic.ttc
+  default_size: 10
+  min_size: 6           # 訳文が長い場合に縮小する下限サイズ
+
+layout:
+  # ブロックの高さに対して訳文が収まらない場合の挙動
+  # shrink: フォントを縮小して収める / overflow: はみ出しを許容して描画
+  overflow_strategy: shrink
+
+translation:
+  # 1回のAPI呼び出しにまとめる最大ブロック数(コスト・レート制限対策)
+  batch_size: 10
+  max_retries: 3
+  source_lang: en
+  target_lang: ja
