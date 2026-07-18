@@ -71,6 +71,17 @@ def _split_lines_by_column_width(lines: List[dict]) -> List[List[dict]]:
     return groups
 
 
+# 行末で単語がハイフン+改行によって分割されている場合(例: "organo-\nmetallic")、
+# そのまま翻訳エンジンに渡すと単語が分断されて誤訳・混乱の原因になる。
+# ハイフンの前後が共に小文字であれば、行送りによる分割とみなして結合する。
+# (大文字が続く場合は新しい文・固有名詞である可能性が高いため結合しない)
+_HYPHENATED_LINE_BREAK_RE = re.compile(r"([a-z])-\n([a-z])")
+
+
+def _dehyphenate(text: str) -> str:
+    return _HYPHENATED_LINE_BREAK_RE.sub(r"\1\2", text)
+
+
 def _bold_ratio_and_tokens(lines: List[dict]) -> Tuple[float, List[str]]:
     total_chars = 0
     bold_chars = 0
@@ -110,7 +121,7 @@ def extract_blocks(doc: fitz.Document) -> List[RawBlock]:
                     x1s.append(lx1)
                     y1s.append(ly1)
 
-                text = "\n".join(lines_text).strip()
+                text = _dehyphenate("\n".join(lines_text).strip())
                 if len(text) < MIN_BLOCK_CHARS:
                     continue
 
@@ -322,9 +333,16 @@ def write_translations(
             merged_rect = member_rects[0]
             for r in member_rects[1:]:
                 merged_rect |= r
-            merged_text = _normalize_for_layout(
-                " ".join(final_texts[i] for i in group_sorted)
-            )
+
+            is_table_data = any(blocks[i].classification == "table_data" for i in group_sorted)
+            if is_table_data:
+                # 表データは改行こそが唯一の行区切りの手がかりなので、
+                # 折り返し用の改行正規化(空白への変換)を行わずそのまま使う。
+                merged_text = "\n".join(final_texts[i] for i in group_sorted)
+            else:
+                merged_text = _normalize_for_layout(
+                    " ".join(final_texts[i] for i in group_sorted)
+                )
             base_size = max(
                 (blocks[i].font_size for i in group_sorted if blocks[i].font_size and blocks[i].font_size > 0),
                 default=default_size,

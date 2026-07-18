@@ -225,3 +225,56 @@ def test_overlapping_source_rects_are_merged_instead_of_colliding(japanese_font_
     page_text = doc[0].get_text()
     assert "これは1つ目の説明文である。" in page_text
     assert "これはrに関する続きの説明である。" in page_text
+
+
+def test_table_data_block_keeps_line_breaks_instead_of_flowing_together(japanese_font_path):
+    """回帰テスト: table_data に分類されたブロックは、改行を空白に変換する
+    通常のレイアウト正規化をバイパスし、行ごとの区切りを保ったまま描画する
+    (数値と訳語が1つの流れる段落として混ざり合わないようにするため)。
+    """
+    from core.classify import RawBlock
+
+    doc = fitz.open()
+    page = doc.new_page()
+
+    block = RawBlock(
+        page_index=0,
+        rect=(50, 100, 300, 400),
+        text="amide methylation\n10\n11\n16\n119\n34",
+        font_size=9,
+        page_height=page.rect.height,
+        classification="table_data",
+    )
+    translated = ["アミドメチル化\n10\n11\n16\n119\n34"]
+    status = write_translations(doc, [block], translated, font_path=japanese_font_path)
+
+    assert status == ["written"]
+
+    d = doc[0].get_text("dict")
+    line_texts = [
+        "".join(span["text"] for span in line["spans"])
+        for b in d["blocks"]
+        if b.get("type") == 0
+        for line in b["lines"]
+    ]
+    # "10", "11" 等が別々の行として描画されている(1行に結合されていない)こと
+    assert "10" in line_texts
+    assert "11" in line_texts
+
+
+def test_dehyphenate_joins_word_broken_across_line_wrap():
+    """回帰テスト: "organo-\\nmetallic" のように行末ハイフンで分断された単語を
+    結合する。翻訳エンジンに分断された単語をそのまま渡すと誤訳の原因になる。
+    """
+    from core.pdf_io import _dehyphenate
+
+    assert _dehyphenate("organo-\nmetallic systems") == "organometallic systems"
+    assert _dehyphenate("high-\nthroughput screening") == "highthroughput screening"
+
+
+def test_dehyphenate_does_not_join_across_uppercase_boundary():
+    """大文字が続く場合(新しい文・固有名詞の可能性)は結合しない。"""
+    from core.pdf_io import _dehyphenate
+
+    text = "a stable complex-\nSMILES was generated"
+    assert _dehyphenate(text) == text  # 変化しないこと

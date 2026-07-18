@@ -1,7 +1,7 @@
 """抽出したPDFテキストブロックの分類(SPEC.md 3章)。
 
 分類結果は以下のいずれか:
-    body / heading / caption / formula / equation / reference /
+    body / heading / caption / formula / equation / table_data / reference /
     header_footer / author_affil / footnote / uncertain
 """
 
@@ -96,6 +96,26 @@ def _looks_like_equation_fragment(text: str) -> bool:
     return avg_chars_per_line <= EQUATION_AVG_CHARS_PER_LINE_THRESHOLD
 
 
+# 罫線の無い(=find_tablesで検出できない)表の本文は、抽出時に
+# 「ラベル\n数値\n数値\n数値\n数値\n数値\n次のラベル\n...」のように
+# セルの中身が行ごとにバラバラに並んだ1つのブロックになる。これを通常の
+# 文章として折り返し・改行結合してしまうと、数値と単語が入り乱れた読めない
+# 塊になる(改行こそが唯一のセル区切りの手がかりのため)。行の大部分が
+# 純粋な数値であるブロックを「table_data」として検出し、書き込み時に
+# 改行を保持したまま描画する(SPEC.md 8章の改行正規化の対象外とする)。
+TABLE_DATA_MIN_LINES = 10
+TABLE_DATA_NUMERIC_LINE_RATIO = 0.4
+_NUMERIC_LINE_RE = re.compile(r"^-?\d+(\.\d+)?%?$")
+
+
+def _looks_like_table_data(text: str) -> bool:
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
+    if len(lines) < TABLE_DATA_MIN_LINES:
+        return False
+    numeric_lines = sum(1 for line in lines if _NUMERIC_LINE_RE.match(line))
+    return numeric_lines / len(lines) >= TABLE_DATA_NUMERIC_LINE_RATIO
+
+
 def _looks_like_heading(text: str, font_size: float, body_font_median: float) -> bool:
     stripped = text.strip()
     if not stripped or len(stripped) > 80:
@@ -138,6 +158,9 @@ def _classify_single(
 
     if _CAPTION_RE.match(text):
         return "caption"
+
+    if _looks_like_table_data(text):
+        return "table_data"
 
     if _looks_like_formula(text):
         return "formula"

@@ -13,6 +13,8 @@ from typing import Dict, List, Optional
 import fitz
 
 from core.classify import EXCLUDED_CLASSIFICATIONS, RawBlock, classify_blocks
+from core.compare_html import build_comparison_html
+from core.consistency import check_glossary_consistency
 from core.glossary import Glossary, GlossaryEntry, build_glossary
 from core.pdf_io import extract_blocks, write_translations
 from core.protect import protect_text, restore_text
@@ -41,6 +43,9 @@ class PipelineReport:
     layout_overflow: List[dict] = dataclass_field(default_factory=list)
     glossary_terms_used: List[str] = dataclass_field(default_factory=list)
     manual_export_path: Optional[str] = None
+    compare_html_path: Optional[str] = None
+    blocks_json_path: Optional[str] = None
+    glossary_inconsistencies: List[dict] = dataclass_field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -51,6 +56,7 @@ class PipelineReport:
             "skipped_by_classification": self.skipped_by_classification,
             "failed_validation": self.failed_validation,
             "layout_overflow": self.layout_overflow,
+            "glossary_inconsistencies": self.glossary_inconsistencies,
             "glossary_terms_used": sorted(set(self.glossary_terms_used)),
         }
 
@@ -62,6 +68,15 @@ MANUAL_TRANSLATION_INSTRUCTIONS = (
     "保護しているため、削除・改変・翻訳せずそのまま出力に残してください。"
     "glossary_hints にある用語は指定の訳語を優先してください。"
     "翻訳しない(原文のまま残す)場合は translated_text を null のままにしてください。"
+    "classification が table_data のブロックは、罫線の無い表のセルが行ごとに"
+    "バラバラに並んだものです(改行こそが唯一のセル区切り)。行数と行の並び順を"
+    "一切変えず、数値のみの行はそのまま(訳さず)残し、文字のラベル行だけを"
+    "日本語に訳してください。行を増減させたり、複数行を1行にまとめたりしないこと。"
+    "隣接するブロックは、PDFの段組みの都合で1つの文・段落が分割されたもの"
+    "であることがあります。ある block の original_text が句点なしで終わって"
+    "いる場合、次の block はその続きの可能性が高いです。同じ動詞の活用語尾"
+    "(例:「〜を示し、」の直後に「〜を示し、」)を続けて繰り返すなど不自然な"
+    "重複を避け、ブロックをまたいでも自然につながる訳文にしてください。"
 )
 
 
@@ -277,6 +292,8 @@ def run_pipeline(
                 )
     else:
         # バッチ翻訳(通常のAPI翻訳エンジン経由)
+        recent_tail_context: Optional[str] = None
+
         for chunk_indices in _chunked(to_translate_indices, batch_size):
             chunk_blocks = [target_blocks[i] for i in chunk_indices]
             protected_pairs = [protect_text(b.text, bold_tokens=b.bold_tokens) for b in chunk_blocks]
@@ -287,8 +304,12 @@ def run_pipeline(
             glossary_hints = glossary.get_relevant_terms(combined_text)
             report.glossary_terms_used.extend(e.en for e in glossary_hints)
 
+            batch_context = context
+            if recent_tail_context:
+                batch_context = f"{context}\n\n{recent_tail_context}" if context else recent_tail_context
+
             translated_protected_list = translator.translate_batch(
-                protected_texts, glossary_hints=glossary_hints, context=context
+                protected_texts, glossary_hints=glossary_hints, context=batch_context
             )
 
             for i, idx in enumerate(chunk_indices):
@@ -316,6 +337,28 @@ def run_pipeline(
                             "original_text": chunk_blocks[i].text[:200],
                         }
                     )
+
+            # 次のバッチへ、このバッチ最後のブロックの原文/訳文の末尾を文脈として引き継ぐ。
+            # バッチの境界をまたいで文が続く場合(段組みの都合で分割された文など)に、
+            # 言葉選び・語尾が食い違うのを防ぐため。
+            last_idx = chunk_indices[-1]
+            last_translated = results[last_idx].translated_text
+            if last_translated:
+                last_original = target_blocks[last_idx].text
+                recent_tail_context = (
+                    "直前のブロックの原文(末尾。文が続いている場合は自然に接続すること): "
+                    f"…{last_original[-200:]}\n"
+                    "直前のブロックの訳文(末尾。言葉選び・語尾をここに合わせて不自然な"
+                    f"繰り返しを避けること): …{last_translated[-200:]}"
+                )
+
+    # 用語集の訳語が実際に一貫して使われているかを、全ブロックを横断してチェックする。
+    # プロンプトで用語集を渡しているだけでは、LLMが本当にその訳語を使ったとは
+    # 限らないため、事後の機械的な検証として行う。
+    consistency_issues = check_glossary_consistency(results, glossary)
+    for issue in consistency_issues:
+        results[issue.block_index].flags.append(f"term_inconsistency:{issue.term_en}")
+    report.glossary_inconsistencies = [issue.to_dict() for issue in consistency_issues]
 
     final_texts = [r.translated_text for r in results]
     write_status = write_translations(
@@ -345,6 +388,35 @@ def run_pipeline(
     report_path = str(Path(output_path).with_suffix("")) + ".report.json"
     with open(report_path, "w", encoding="utf-8") as f:
         json.dump(report.to_dict(), f, ensure_ascii=False, indent=2)
+
+    # 原文/訳文の対照表示HTML(自己完結、ブラウザで開くだけで確認できる)を
+    # report.jsonと同様に毎回自動生成する。
+    compare_html_path = str(Path(output_path).with_suffix("")) + ".compare.html"
+    with open(compare_html_path, "w", encoding="utf-8") as f:
+        f.write(build_comparison_html(results, input_path, output_path))
+    report.compare_html_path = compare_html_path
+
+    # ブロック単位の結果をJSONとして保存する。GUI(Flet等)がPDFやreport.jsonを
+    # 再解析せずに、原文・訳文・フラグをそのまま読み込めるようにするため。
+    blocks_json_path = str(Path(output_path).with_suffix("")) + ".blocks.json"
+    with open(blocks_json_path, "w", encoding="utf-8") as f:
+        json.dump(
+            [
+                {
+                    "page_index": r.page_index,
+                    "classification": r.classification,
+                    "original_text": r.original_text,
+                    "translated_text": r.translated_text,
+                    "flags": r.flags,
+                    "written": r.written,
+                }
+                for r in results
+            ],
+            f,
+            ensure_ascii=False,
+            indent=2,
+        )
+    report.blocks_json_path = blocks_json_path
 
     if review_tsv_path:
         with open(review_tsv_path, "w", encoding="utf-8", newline="") as f:

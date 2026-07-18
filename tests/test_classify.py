@@ -149,3 +149,34 @@ def test_inline_roman_numeral_list_not_misdetected_as_reference_list():
     ]
     classify_blocks(blocks)
     assert blocks[0].classification != "reference"
+
+
+def test_borderless_table_data_detected_by_numeric_line_ratio():
+    """回帰テスト: 罫線の無い表は、ラベル行と数値のみの行が交互に並んだ1つの
+    ブロックとして抽出される(表1のような反応名+複数手法の数値列)。これを
+    通常の文章として改行結合すると、数値と単語が入り乱れた読めない塊になる
+    ため、"table_data" として検出し改行を保持する対象にする。
+    """
+    lines = []
+    for name in ["amide methylation", "cyclization", "epoxidation", "hydride transfer", "peptide"]:
+        lines.append(name)
+        lines.extend(["10", "11", "16", "119", "34"])
+    text = "\n".join(lines)
+
+    blocks = [_block(0, 300, 700, text)]
+    classify_blocks(blocks)
+    assert blocks[0].classification == "table_data"
+
+
+def test_ordinary_prose_with_a_few_numbers_not_misdetected_as_table_data():
+    blocks = [
+        _block(
+            0,
+            300,
+            360,
+            "The reaction was carried out at 25 °C for 12 h, affording the product "
+            "in 85% yield after purification by column chromatography on silica gel.",
+        )
+    ]
+    classify_blocks(blocks)
+    assert blocks[0].classification != "table_data"

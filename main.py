@@ -1,9 +1,11 @@
 import argparse
+from pathlib import Path
 from typing import List, Optional
 
 import yaml
 from dotenv import load_dotenv
 
+from core.fetch import is_arxiv_reference, is_doi_reference, resolve_and_fetch
 from core.glossary import VALID_FIELDS, build_glossary
 from core.pipeline import run_pipeline
 from translators import get_translator
@@ -12,6 +14,23 @@ from translators import get_translator
 def load_config(path: str = "config.yaml") -> dict:
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+def resolve_input_path(raw_input: str, dest_dir: str = "input") -> str:
+    """--input がローカルファイルならそのまま返す。arXiv参照/DOIであれば
+    PDFを取得して保存先パスを返す(DOIはオープンアクセスの場合のみ)。
+    """
+    if Path(raw_input).exists():
+        return raw_input
+
+    if is_arxiv_reference(raw_input) or is_doi_reference(raw_input):
+        print(f"'{raw_input}' からPDFの取得を試みます...")
+        dest_path = resolve_and_fetch(raw_input, Path(dest_dir))
+        size = dest_path.stat().st_size
+        print(f"取得しました: {dest_path} ({size:,} bytes)")
+        return str(dest_path)
+
+    return raw_input
 
 
 def parse_pages(spec: Optional[str]) -> Optional[List[int]]:
@@ -34,7 +53,16 @@ def parse_pages(spec: Optional[str]) -> Optional[List[int]]:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="論文PDFを和訳して書き込むツール")
-    parser.add_argument("--input", required=True, help="入力PDFパス")
+    parser.add_argument(
+        "--input",
+        required=True,
+        help=(
+            "入力PDFパス、またはarXiv ID/URL(例: 2301.12345)、DOI(例: 10.1021/...)。"
+            "arXivは常に自動取得できる。DOIはオープンアクセスと確認できた場合のみ"
+            "自動取得する(.envのUNPAYWALL_EMAILが必要)。それ以外は手動でダウンロード"
+            "してファイルパスを指定すること。"
+        ),
+    )
     parser.add_argument("--output", help="出力PDFパス(省略時は <input>_ja.pdf)")
     parser.add_argument(
         "--engine",
@@ -87,7 +115,8 @@ def main():
     args = parser.parse_args()
 
     engine = args.engine or config.get("engine", "claude")
-    output_path = args.output or args.input.rsplit(".pdf", 1)[0] + "_ja.pdf"
+    input_path = resolve_input_path(args.input)
+    output_path = args.output or input_path.rsplit(".pdf", 1)[0] + "_ja.pdf"
     pages = parse_pages(args.pages)
 
     glossary = build_glossary(field=args.field, user_glossary_path=args.glossary)
@@ -103,7 +132,7 @@ def main():
         )
 
     report = run_pipeline(
-        input_path=args.input,
+        input_path=input_path,
         output_path=output_path,
         translator=translator,
         glossary=glossary,
@@ -136,6 +165,10 @@ def main():
         print(f"検証失敗により原文のまま残したブロック: {len(report.failed_validation)}件")
     if report.layout_overflow:
         print(f"レイアウトに収まらず原文のまま残したブロック: {len(report.layout_overflow)}件")
+    if report.glossary_inconsistencies:
+        print(f"用語集の訳語が使われていない可能性がある箇所: {len(report.glossary_inconsistencies)}件(report.jsonおよび対照表示で確認可能)")
+    if report.compare_html_path:
+        print(f"対照表示(原文/訳文): {report.compare_html_path}")
 
 
 if __name__ == "__main__":

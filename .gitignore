@@ -221,6 +221,9 @@ __marimo__/
 fonts/*.ttf
 *_ja.pdf
 *.report.json
+*.blocks.json
+*.compare.html
 input/*.pdf
 output/*
 !output/README.md
+app_data/

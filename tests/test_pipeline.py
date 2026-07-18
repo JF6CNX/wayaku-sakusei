@@ -5,7 +5,7 @@ from typing import List, Optional
 
 import fitz
 
-from core.glossary import GlossaryEntry, build_glossary
+from core.glossary import Glossary, GlossaryEntry, build_glossary
 from core.pipeline import run_pipeline
 from translators.base import BaseTranslator
 
@@ -146,3 +146,113 @@ def test_pages_filter_limits_processed_blocks(tmp_path, japanese_font_path):
     out_doc = fitz.open(str(output_pdf))
     assert "これは翻訳結果です" in out_doc[0].get_text()
     assert "second page discusses" in out_doc[1].get_text()  # 対象外ページは原文のまま
+
+
+class ContextRecordingTranslator(BaseTranslator):
+    """呼び出しごとの context 引数を記録するテスト用スタブ翻訳エンジン。"""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.seen_contexts: List[Optional[str]] = []
+
+    def translate_batch(
+        self,
+        texts: List[str],
+        glossary_hints: Optional[List[GlossaryEntry]] = None,
+        context: Optional[str] = None,
+    ) -> List[str]:
+        self.seen_contexts.append(context)
+        return [f"訳文{i}" for i in range(len(texts))]
+
+
+def test_next_batch_receives_previous_batch_tail_as_context(tmp_path, japanese_font_path):
+    """回帰テスト: 段組みの都合で1つの文がバッチの境界をまたいで分割された場合でも、
+    直前のバッチ最後のブロックの原文・訳文の末尾が次のバッチ呼び出しの context に
+    引き継がれ、言葉選びの一貫性を保てるようにする。
+    """
+    input_pdf = tmp_path / "input.pdf"
+    doc = fitz.open()
+    page = doc.new_page()
+    y = 100
+    for i in range(4):
+        page.insert_textbox(
+            fitz.Rect(72, y, 540, y + 30),
+            f"This is sentence number {i} continuing the discussion of catalysts here today.",
+            fontsize=10,
+        )
+        y += 40
+    doc.save(str(input_pdf))
+    doc.close()
+
+    output_pdf = tmp_path / "output.pdf"
+    translator = ContextRecordingTranslator()
+    run_pipeline(
+        input_path=str(input_pdf),
+        output_path=str(output_pdf),
+        translator=translator,
+        glossary=build_glossary(),
+        font_path=japanese_font_path,
+        batch_size=1,  # 各ブロックを別バッチにして境界をまたぐ引き継ぎを検証しやすくする
+    )
+
+    # 最初の呼び出しには当然「直前のブロック」の文脈はまだ無い
+    assert translator.seen_contexts[0] is None or "直前のブロック" not in translator.seen_contexts[0]
+    # 2回目以降の呼び出しには、前のバッチの訳文の引き継ぎが含まれること
+    for later_context in translator.seen_contexts[1:]:
+        assert later_context is not None
+        assert "直前のブロック" in later_context
+        assert "訳文" in later_context
+
+
+def test_comparison_html_is_generated_alongside_report(tmp_path, japanese_font_path):
+    """対照表示HTML(<output>.compare.html)がreport.jsonと同様に自動生成され、
+    原文・訳文・フラグ・フィルタUIが含まれることを確認する。
+    """
+    input_pdf = tmp_path / "input.pdf"
+    _make_sample_pdf(input_pdf)
+    output_pdf = tmp_path / "output.pdf"
+
+    report = run_pipeline(
+        input_path=str(input_pdf),
+        output_path=str(output_pdf),
+        translator=EchoTranslator(),
+        glossary=build_glossary(),
+        font_path=japanese_font_path,
+    )
+
+    compare_path = Path(report.compare_html_path)
+    assert compare_path.exists()
+    assert compare_path == Path(str(output_pdf.with_suffix("")) + ".compare.html")
+
+    html_text = compare_path.read_text(encoding="utf-8")
+    assert "<html" in html_text
+    assert "これは翻訳結果です" in html_text  # EchoTranslatorの訳文が含まれる
+    assert "A Study of Ruthenium Catalysts" in html_text  # 原文も含まれる
+    assert "要注意のみ" in html_text  # フィルタUIが含まれる
+    assert "data-status=" in html_text
+
+
+def test_glossary_inconsistency_is_detected_and_flagged(tmp_path, japanese_font_path):
+    """回帰テスト: 用語集にある英語表現が原文に出現するのに、翻訳結果に対応する
+    日本語訳が含まれない場合、report.glossary_inconsistencies に記録され、
+    該当ブロックに term_inconsistency フラグが付くこと。
+    """
+    input_pdf = tmp_path / "input.pdf"
+    _make_sample_pdf(input_pdf)
+    output_pdf = tmp_path / "output.pdf"
+
+    # EchoTranslatorは常に固定文言を返すため、用語集の訳語(ルテニウム)は
+    # 絶対に翻訳結果に含まれず、不一致が検出されるはず。
+    glossary = Glossary([GlossaryEntry(en="Ruthenium", ja="ルテニウム")])
+
+    report = run_pipeline(
+        input_path=str(input_pdf),
+        output_path=str(output_pdf),
+        translator=EchoTranslator(),
+        glossary=glossary,
+        font_path=japanese_font_path,
+    )
+
+    assert len(report.glossary_inconsistencies) >= 1
+    assert any(i["term_en"] == "Ruthenium" for i in report.glossary_inconsistencies)
+    assert any(i["expected_ja"] == "ルテニウム" for i in report.glossary_inconsistencies)
